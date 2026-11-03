@@ -1,36 +1,65 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const PRICE_LOOKUP = {
-  finova_premium_monthly: 'price_1UNZBO0WT1XqdqLbImMySh5l',
-  finova_premium_yearly: 'price_1UNZBR0WT1XqdqLbgWlr1jXc',
-  finova_pro_monthly: 'price_1UNZBT0WT1XqdqLbp0rjqShx',
-  finova_pro_yearly: 'price_1UNZBV0WT1XqdqLbmJB8lwFp'
-};
-exports.handler = async (event, context) => {
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
+'use strict';
+const b = require('../lib/billing');
+const { createHash } = require('node:crypto');
+
+exports.handler = (event) => b.run(event, 'POST', async () => {
+  const stripe = b.client();
+  await b.verifyAccount(stripe);
+  const user = await b.user(event);
+
+  let body;
   try {
-    const auth = event.headers.authorization || event.headers.Authorization || '';
-    if (!/^Bearer\s+\S+$/i.test(auth)) return {statusCode:401,body:JSON.stringify({error:'Autenticación requerida'})};
-    const user = context.clientContext && context.clientContext.user;
-    if (!user || !user.sub || !user.email) return { statusCode: 401, body: JSON.stringify({error:'Inicia sesión para contratar Premium'}) };
-    const { plan } = JSON.parse(event.body || '{}');
-    if (!Object.prototype.hasOwnProperty.call(PRICE_LOOKUP,plan)) return {statusCode:400,body:JSON.stringify({error:'Plan no válido'})};
-    const base = process.env.URL || process.env.DEPLOY_PRIME_URL;
-    if (!base) throw new Error('Falta configurar URL del sitio');
-    const session = await stripe.checkout.sessions.create({
-      mode:'subscription',
-      line_items:[{price:PRICE_LOOKUP[plan],quantity:1}],
-      customer_email:user.email,
-      client_reference_id:user.sub,
-      allow_promotion_codes:true,
-      billing_address_collection:'auto',
-      success_url:`${base}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:`${base}/?checkout=cancel`,
-      metadata:{app:'finova',plan,user_id:user.sub},
-      subscription_data:{metadata:{app:'finova',plan,user_id:user.sub}}
-    });
-    return {statusCode:200,headers:{'Content-Type':'application/json'},body:JSON.stringify({url:session.url})};
-  } catch(err) {
-    console.error('Checkout error',err);
-    return {statusCode:500,body:JSON.stringify({error:'No se pudo iniciar el pago seguro'})};
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    throw b.error(400, 'Solicitud no válida.');
   }
-};
+
+  const lookup = b.planLookupKey(body.plan);
+  const price = await b.requirePrice(stripe, lookup);
+  const customer = await b.customerFor(stripe, user, true);
+  const current = await b.entitlement(stripe, customer.id);
+
+  if (current.plan !== 'free') {
+    throw b.error(409, 'Ya tienes una suscripción. Gestiona el plan existente.');
+  }
+
+  const sessions = await stripe.checkout.sessions.list({ customer: customer.id, status: 'open', limit: 100 });
+  if (sessions.has_more) {
+    throw b.error(409, 'Cierra los pagos pendientes antes de continuar.');
+  }
+
+  for (const session of sessions.data || []) {
+    if (session.metadata?.app === 'finova' && session.metadata.plan === body.plan && session.url) {
+      return b.response(200, { url: session.url, test: !b.isLive() });
+    }
+  }
+
+  const idempotencyKey = 'finova-checkout-' + createHash('sha256')
+    .update(`${user.id}:${body.plan}:${price.id}:${b.isLive() ? 'live' : 'test'}`)
+    .digest('hex');
+
+  const created = await stripe.checkout.sessions.create({
+    mode: 'subscription',
+    branding_settings: {
+      display_name: 'm.cfinova',
+      button_color: '#713cce',
+      background_color: '#faf7ff'
+    },
+    customer: customer.id,
+    billing_address_collection: 'required',
+    customer_update: { address: 'auto', name: 'auto' },
+    tax_id_collection: { enabled: true },
+    line_items: [{ price: price.id, quantity: 1 }],
+    metadata: { app: 'finova', plan: body.plan },
+    subscription_data: { metadata: { app: 'finova', plan: body.plan } },
+    client_reference_id: String(user.id),
+    success_url: b.ORIGIN + '/?checkout=success&billing=1',
+    cancel_url: b.ORIGIN + '/?checkout=cancel'
+  }, { idempotencyKey });
+
+  if (!created.url) {
+    throw b.error(502, 'Stripe no devolvió un enlace de pago válido.');
+  }
+
+  return b.response(200, { url: created.url, test: !b.isLive() });
+});
