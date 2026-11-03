@@ -14,6 +14,7 @@ exports.handler = (event) => b.run(event, 'POST', async () => {
   const data = await b.entitlement(stripe, customer.id);
   const portal = await stripe.billingPortal.sessions.create({
     customer: customer.id,
+    configuration: b.portalConfiguration(),
     return_url: b.ORIGIN + '/?billing=portal',
     metadata: { app: 'finova', finova_user_id: String(user.id), finova_plan: data.plan }
   });
