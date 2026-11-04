@@ -16,9 +16,13 @@ exports.handler = (event) => b.run(event, 'POST', async () => {
 
   const lookup = b.planLookupKey(body.plan);
   const price = await b.requirePrice(stripe, lookup);
+  const expectedInterval = body.plan.endsWith('_yearly') ? 'year' : 'month';
+  if (price.lookup_key !== lookup || price.recurring?.interval !== expectedInterval || !Number.isInteger(price.unit_amount) || price.unit_amount <= 0) {
+    throw b.error(503, 'El precio configurado para este plan no es válido.');
+  }
+
   const customer = await b.customerFor(stripe, user, true);
   const current = await b.entitlement(stripe, customer.id);
-
   if (current.plan !== 'free') {
     throw b.error(409, 'Ya tienes una suscripción. Gestiona el plan existente.');
   }
