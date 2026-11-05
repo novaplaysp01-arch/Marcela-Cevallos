@@ -1,1 +1,1 @@
-{"name":"finova-stripe","private":true,"dependencies":{"stripe":"^18.5.0"}}
+{"name":"finova-stripe","private":true,"scripts":{"test":"node --test tests/*.test.cjs"},"dependencies":{"stripe":"^18.5.0"}}
