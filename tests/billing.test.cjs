@@ -75,7 +75,7 @@ test('checkout creates a subscription using verified identity and a valid price'
   f.stripe.customers.search = async () => ({ data: [] });
   const response = await checkout(event);
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /checkout\.stripe\.com/);
+  assert.match(response.body, /checkout\\.stripe\\.com/);
   assert.equal(f.calls.sessions.length, 1);
   assert.equal(f.calls.sessions[0][0].customer, 'cus_owned');
 });
